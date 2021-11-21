@@ -14,6 +14,9 @@ import os
 import socket
 import json
 import re
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 class MicroBotPush:
     class UUID():
@@ -43,10 +46,12 @@ class MicroBotPush:
                          tmp[2:4]
                 self.bdaddr = bdaddr.decode()
                 print("notify: ack with bdaddr")
+                _LOGGER.info("ack with bdaddr")
             elif cHandle == 0x2e:
                 token = binascii.b2a_hex(data)[2:2+32]
                 self.token = token.decode()
                 print("notify: ack with token")
+                _LOGGER.info("ack with token")
                 # vulnerable protocol!
             elif cHandle == 0x17: # 1.1.22.2
                 tmp = binascii.b2a_hex(data)[4:4+36]
@@ -57,8 +62,10 @@ class MicroBotPush:
                     token = tmp[4:4+32]
                     self.token = token.decode()
                     print("notify: ack with token")
+                    _LOGGER.info("ack with token")
             else:
                 print("notify: unknown")
+                _LOGGER.error("unknown")
 
         def getToken(self):
             return self.token
@@ -93,15 +100,18 @@ class MicroBotPush:
         while True:
             try:
                 print("connecting...\r", end='')
+                _LOGGER.info("connecting...")
                 self.p = Peripheral(self.bdaddr, "random")
                 self.handler = MicroBotPush.MbpDelegate(0) 
                 self.p.setDelegate(self.handler)
                 print("connected    ")
+                _LOGGER.info("connected    ")
                 self.__setToken(init)
                 break
             except BTLEException:
                 if retry == 0:
                     print("failed to connect")
+                    _LOGGER.error("failed to connect")
                     break
                 retry = retry - 1 
                 sleep(1)
@@ -111,6 +121,7 @@ class MicroBotPush:
         try:
             self.socket.connect(self.socket_path)
             print("connected to server")
+            _LOGGER.info("connected to server")
             return self.socket
         except ConnectionRefusedError:
             return None
@@ -122,6 +133,7 @@ class MicroBotPush:
             return
 
         print("server mode")
+        _LOGGER.info("server mode")
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             os.remove(self.socket_path)
@@ -139,6 +151,7 @@ class MicroBotPush:
                     msg = connection.recv(1024)
                     param = json.loads(msg.decode('UTF-8'))
                     print(param)
+                    _LOGGER.info(param)
                     self.depth = param['depth']
                     self.duration = param['duration']
                     self.mode = param['mode']
@@ -149,6 +162,7 @@ class MicroBotPush:
                         break
                 except BrokenPipeError:
                     print('broken pipe error')
+                    _LOGGER.error('broken pipe error')
                 except KeyboardInterrupt:
                     os.remove(self.socket_path)
                     self.disconnect()
@@ -168,8 +182,10 @@ class MicroBotPush:
             self.p.disconnect()
             self.p = None
             print("disconnected")
+            _LOGGER.info("disconnected")
         except BTLEException:
             print("failed to disconnect")
+            _LOGGER.error("failed to disconnect")
 
     def __loadToken(self):
         config = configparser.ConfigParser()
@@ -211,6 +227,7 @@ class MicroBotPush:
                 c.write(binascii.a2b_hex("00000167"+"00"*16))
         except BTLEException:
             print("failed to init token")
+            _LOGGER.error("failed to init token")
 
         while True:
             bdaddr = self.handler.getBdaddr()
@@ -219,6 +236,7 @@ class MicroBotPush:
             if self.p.waitForNotifications(1.0):
                 continue
             print("waiting...\r", end='')
+            _LOGGER.info("waiting...")
 
     def __setToken(self, init):
         if init:
@@ -241,6 +259,7 @@ class MicroBotPush:
                         c.write(binascii.a2b_hex("00000167"+self.token))
                 except BTLEException:
                     print("failed to set token")
+                    _LOGGER.error("failed to set token")
 
     def getToken(self):
         if self.p == None:
@@ -262,8 +281,10 @@ class MicroBotPush:
                 c.write(rstr.encode())
         except BTLEException:
             print("failed to request token")
+            _LOGGER.error("failed to request token")
 
         print('touch the button to get a token')
+        _LOGGER.warning('touch the button to get a token')
 
         while True:
             token = self.handler.getToken()
@@ -272,6 +293,7 @@ class MicroBotPush:
             if self.p.waitForNotifications(1.0):
                 continue
             print("waiting...\r", end='')
+            _LOGGER.info("waiting...")
 
         #print(token)
         self.token = token
@@ -343,11 +365,13 @@ class MicroBotPush:
             except BTLEDisconnectError:
                 if retry == 0:
                     print("failed to push by disconnect error")
+                    _LOGGER.error("failed to push by disconnect error")
                     return False
                 retry = retry - 1 
                 sleep(1)
             except BTLEException:
                 print("failed to push by exception")
+                _LOGGER.error("failed to push by exception")
                 return False
 
     def __randomstr(self, n):
