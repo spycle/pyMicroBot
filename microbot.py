@@ -74,7 +74,7 @@ class MicroBotPush:
             return self.bdaddr
     # end of class
 
-    def __init__(self, bdaddr, config, newproto, is_server):
+    def __init__(self, bdaddr, config, newproto, is_server, socket_path, depth, duration, mode):
         self.bdaddr = bdaddr
         self.retry = 5
         self.token = None
@@ -83,15 +83,15 @@ class MicroBotPush:
         self.config = expanduser(config)
         self.__loadToken()
         self.newproto = newproto
-        self.depth = 50
-        self.duration = 0
-        self.mode = 0
+        self.setMode(mode)
         self.is_server = is_server
         self.socket = None
-        self.socket_path = "/var/tmp/microbot-"+re.sub('[^a-f0-9]', '', bdaddr.lower())
+        self.socket_path = "/config/microbot-"+re.sub('[^a-f0-9]', '', bdaddr.lower()) 
+        self.depth = depth
+        self.duration = duration
 
     def connect(self, init=False):
-        if self.is_server == False:
+        if self.is_server == 'client':
             self.socket = self.__connectToServer()
             if self.socket:
                 return
@@ -129,7 +129,7 @@ class MicroBotPush:
             return None
 
     def runServer(self):
-        if self.is_server == False:
+        if self.is_server == 'client':
             return
 
         print("server mode")
@@ -151,12 +151,13 @@ class MicroBotPush:
                     msg = connection.recv(1024)
                     param = json.loads(msg.decode('UTF-8'))
                     print(param)
-                    _LOGGER.info(param)
+                    _LOGGER.info('received %s', param)
                     self.depth = param['depth']
                     self.duration = param['duration']
                     self.mode = param['mode']
                     res = self.push(param['setparams'])
                     msg = json.dumps({"result": res}).encode('UTF-8')
+                    _LOGGER.info('returned $s', msg)
                     connection.send(msg)
                     if res == False:
                         break
@@ -171,7 +172,7 @@ class MicroBotPush:
             self.disconnect()
 
     def disconnect(self):
-        if self.is_server == False:
+        if self.is_server == 'client':
             if self.socket:
                 self.socket.close()
                 return
@@ -331,7 +332,7 @@ class MicroBotPush:
         return param['result']
 
     def push(self, setparams):
-        if self.is_server == False:
+        if self.is_server == 'client':
             if self.socket:
                 res = self.__push_server(setparams)
                 return res
@@ -370,9 +371,12 @@ class MicroBotPush:
                 retry = retry - 1 
                 sleep(1)
             except BTLEException:
-                print("failed to push by exception")
-                _LOGGER.error("failed to push by exception")
-                return False
+                if retry == 0:
+                    print("failed to push by exception")
+                    _LOGGER.error("failed to push by exception")
+                    return False
+                retry = retry - 1
+                sleep(1)
 
     def __randomstr(self, n):
        randstr = [random.choice(string.printable) for i in range(n)]
