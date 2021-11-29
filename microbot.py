@@ -74,24 +74,24 @@ class MicroBotPush:
             return self.bdaddr
     # end of class
 
-    def __init__(self, bdaddr, config, newproto, is_server, socket_path, depth, duration, mode):
+    def __init__(self, bdaddr, config, socket_path, newproto=True, is_server=False):
         self.bdaddr = bdaddr
-        self.retry = 5
+        self.retry = 7
         self.token = None
         self.p = None
         self.handler = None
         self.config = expanduser(config)
         self.__loadToken()
         self.newproto = newproto
-        self.setMode(mode)
+        self.depth = 50
+        self.duration = 0
+        self.mode = 0
         self.is_server = is_server
         self.socket = None
         self.socket_path = "/config/microbot-"+re.sub('[^a-f0-9]', '', bdaddr.lower()) 
-        self.depth = depth
-        self.duration = duration
 
     def connect(self, init=False):
-        if self.is_server == 'client':
+        if self.is_server == False:
             self.socket = self.__connectToServer()
             if self.socket:
                 return
@@ -129,7 +129,7 @@ class MicroBotPush:
             return None
 
     def runServer(self):
-        if self.is_server == 'client':
+        if self.is_server == False:
             return
 
         print("server mode")
@@ -172,7 +172,7 @@ class MicroBotPush:
             self.disconnect()
 
     def disconnect(self):
-        if self.is_server == 'client':
+        if self.is_server == False:
             if self.socket:
                 self.socket.close()
                 return
@@ -332,7 +332,7 @@ class MicroBotPush:
         return param['result']
 
     def push(self, setparams):
-        if self.is_server == 'client':
+        if self.is_server == False:
             if self.socket:
                 res = self.__push_server(setparams)
                 return res
@@ -346,18 +346,18 @@ class MicroBotPush:
                     s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
                     c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
                     id = self.__randomid(16)
-                    if setparams:
-                        c.write(binascii.a2b_hex(id+"000100000008030001000a0000000000decd"), True)
-                        c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.mode)+"000000"+"000000000000000000000000"), True)
-                        c.write(binascii.a2b_hex(id+"000100000008040001000a0000000000decd"), True)
-                        c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.depth)+"000000"+"000000000000000000000000"), True)
-                        c.write(binascii.a2b_hex(id+"000100000008050001000a0000000000decd"), True)
-                        c.write(binascii.a2b_hex(id+"0fff"+self.duration.to_bytes(4,"little").hex()+"000000000000000000000000"), True)
-                        return True
-                    else:
-                        c.write(binascii.a2b_hex(id+"000100000008020000000a0000000000decd"), True)
-                        c.write(binascii.a2b_hex(id+"0fffffffffff000000000000000000000000"), True)
-                        return True
+#                    if setparams:
+#                        c.write(binascii.a2b_hex(id+"000100000008030001000a0000000000decd"), True)
+#                        c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.mode)+"000000"+"000000000000000000000000"), True)
+#                        c.write(binascii.a2b_hex(id+"000100000008040001000a0000000000decd"), True)
+#                        c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.depth)+"000000"+"000000000000000000000000"), True)
+#                        c.write(binascii.a2b_hex(id+"000100000008050001000a0000000000decd"), True)
+#                        c.write(binascii.a2b_hex(id+"0fff"+self.duration.to_bytes(4,"little").hex()+"000000000000000000000000"), True)
+#                        return True
+#                    else:
+                    c.write(binascii.a2b_hex(id+"000100000008020000000a0000000000decd"), True)
+                    c.write(binascii.a2b_hex(id+"0fffffffffff000000000000000000000000"), True)
+                    return True
                 else:
                     s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1821)
                     c = s.getCharacteristics(MicroBotPush.UUID.CHR2A11)[0]
@@ -369,7 +369,7 @@ class MicroBotPush:
                     _LOGGER.error("failed to push by disconnect error")
                     return False
                 retry = retry - 1 
-                sleep(1)
+                sleep(10)
             except BTLEException:
                 if retry == 0:
                     print("failed to push by exception")
@@ -377,6 +377,36 @@ class MicroBotPush:
                     return False
                 retry = retry - 1
                 sleep(1)
+
+    def setParams(self):
+
+        if self.p == None:
+            return False
+        retry = self.retry
+        while True:
+            try:
+                if self.newproto:
+                    s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
+                    c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
+                    id = self.__randomid(16)
+                    c.write(binascii.a2b_hex(id+"000100000008030001000a0000000000decd"), True)
+                    c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.mode)+"000000"+"000000000000000000000000"), True)
+                    c.write(binascii.a2b_hex(id+"000100000008040001000a0000000000decd"), True)
+                    c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.depth)+"000000"+"000000000000000000000000"), True)
+                    c.write(binascii.a2b_hex(id+"000100000008050001000a0000000000decd"), True)
+                    c.write(binascii.a2b_hex(id+"0fff"+self.duration.to_bytes(4,"little").hex()+"000000000000000000000000"), True)
+                    c.write(binascii.a2b_hex(id+"000100000008020000000a0000000000decd"), True)
+                    c.write(binascii.a2b_hex(id+"0fffffffffff000000000000000000000000"), True)
+                    return True
+            except BTLEDisconnectError:
+                if retry == 0:
+                    print("failed to push by disconnect error")
+                    return False
+                retry = retry - 1 
+                sleep(1)
+            except BTLEException:
+                print("failed to push by exception")
+                return False
 
     def __randomstr(self, n):
        randstr = [random.choice(string.printable) for i in range(n)]
