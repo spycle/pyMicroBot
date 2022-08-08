@@ -1,432 +1,454 @@
-# Forked from https://github.com/kahiroka/microbot
-import binascii
-from bluepy.btle import Peripheral
-from bluepy.btle import BTLEException
-from bluepy.btle import BTLEDisconnectError
-from bluepy.btle import DefaultDelegate
-import sys
-from time import sleep
+"""MicroBot Client."""
+from __future__ import annotations
+import logging
+import asyncio
+from typing import Optional
+from typing import Any
+import struct
+import async_timeout
+import bleak
+from bleak import BleakScanner
+from bleak import discover
+from bleak import BleakError
+from bleak_retry_connector import BleakClient, establish_connection
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+from dataclasses import dataclass
 import random, string
 import configparser
 from configparser import NoSectionError
-from argparse import ArgumentParser
-from os.path import expanduser
 import os
-import socket
-import json
-import re
-import logging
+from os.path import expanduser
+import binascii
+from binascii import hexlify, unhexlify
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER: logging.Logger = logging.getLogger(__package__)
+CONNECT_LOCK = asyncio.Lock()
+DEFAULT_TIMEOUT = 20
+DEFAULT_RETRY_COUNT = 5
+DEFAULT_SCAN_TIMEOUT = 30
 
-class MicroBotPush:
-    class UUID():
-        SVC1831 = '00001831-0000-1000-8000-00805f9b34fb'
-        CHR2A90 = '00002a90-0000-1000-8000-00805f9b34fb'
-        CHR2A98 = '00002a98-0000-1000-8000-00805f9b34fb'
-        CHR2A89 = '00002a89-0000-1000-8000-00805f9b34fb' # 1.1.22.2
-        SVC1821 = '00001821-0000-1000-8000-00805f9b34fb'
-        CHR2A11 = '00002a11-0000-1000-8000-00805f9b34fb'
-        CHR2A12 = '00002a12-0000-1000-8000-00805f9b34fb'
-        CHR2A35 = '00002a35-0000-1000-8000-00805f9b34fb'
-        CHR2A19 = '00002a19-0000-1000-8000-00805f9b34fb' # battery level
+SVC1831 = "00001831-0000-1000-8000-00805f9b34fb"
+CHR2A89 = "00002a89-0000-1000-8000-00805f9b34fb"
 
-    class MbpDelegate(DefaultDelegate):
-        def __init__(self, params):
-            DefaultDelegate.__init__(self)
-            self.token = None
-            self.bdaddr = None
 
-        def handleNotification(self, cHandle, data):
-            if cHandle == 0x31:
-                tmp = binascii.b2a_hex(data)
-                bdaddr = tmp[12:14]+ \
-                         tmp[10:12]+ \
-                         tmp[8:10]+ \
-                         tmp[6:8]+ \
-                         tmp[4:6]+ \
-                         tmp[2:4]
-                self.bdaddr = bdaddr.decode()
-                print("notify: ack with bdaddr")
-                _LOGGER.info("ack with bdaddr")
-            elif cHandle == 0x2e:
-                token = binascii.b2a_hex(data)[2:2+32]
-                self.token = token.decode()
-                print("notify: ack with token")
-                _LOGGER.info("ack with token")
-                # vulnerable protocol!
-            elif cHandle == 0x17: # 1.1.22.2
-                tmp = binascii.b2a_hex(data)[4:4+36]
-                if b'0f0101' == tmp[:6] or b'0f0102' == tmp[:6]:
-                    bdaddr = tmp[6:6+12]
-                    self.bdaddr = bdaddr.decode()
-                elif b'1fff' == tmp[0:4] and b'0000000000000000000000' != tmp[6:6+22] and b'00000000' == tmp[28:36]:
-                    token = tmp[4:4+32]
-                    self.token = token.decode()
-                    print("notify: ack with token")
-                    _LOGGER.info("ack with token")
-            else:
-                print("notify: unknown")
-                _LOGGER.error("unknown")
+@dataclass
+class MicroBotAdvertisement:
+    """MicroBot avertisement."""
 
-        def getToken(self):
-            return self.token
+    address: str
+    data: dict[str, Any]
+    device: BLEDevice
 
-        def getBdaddr(self):
-            return self.bdaddr
-    # end of class
 
-    def __init__(self, bdaddr, config, socket_path, newproto=True, is_server=False):
-        self.bdaddr = bdaddr
-        self.retry = 5
-        self.token = None
-        self.p = None
-        self.handler = None
-        self.config = expanduser(config)
+def parse_advertisement_data(
+    device: BLEDevice, advertisement_data: AdvertisementData
+) -> MicroBotAdvertisement | None:
+    """Parse advertisement data."""
+    services = advertisement_data.service_uuids
+    if not services:
+        return
+    if SVC1831 not in services:
+        return
+    else:
+        _LOGGER.debug("Updating MicroBot data")
+        data = {
+            "address": device.address,  # MacOS uses UUIDs
+            "local_name": advertisement_data.local_name,
+            "rssi": device.rssi,
+            "svc": advertisement_data.service_uuids[4],
+            "manufacturer_data_1280": advertisement_data.manufacturer_data.get(1280),
+            "manufacturer_data_76": advertisement_data.manufacturer_data.get(76),
+        }
+
+    return MicroBotAdvertisement(device.address, data, device)
+
+
+class GetMicroBotDevices:
+    """Scan for all MicroBot devices and return"""
+
+    def __init__(self) -> None:
+        """Get MicroBot devices class constructor."""
+        self._adv_data: dict[str, MicroBotAdvertisement] = {}
+
+    def detection_callback(
+        self,
+        device: BLEDevice,
+        advertisement_data: AdvertisementData,
+    ) -> None:
+        discovery = parse_advertisement_data(device, advertisement_data)
+        if discovery:
+            self._adv_data[discovery.address] = discovery
+
+    async def discover(
+        self, retry: int = DEFAULT_RETRY_COUNT, scan_timeout: int = DEFAULT_SCAN_TIMEOUT
+    ) -> dict:
+        """Find switchbot devices and their advertisement data."""
+
+        _LOGGER.debug("Running discovery")
+        devices = None
+        devices = BleakScanner()
+        devices.register_detection_callback(self.detection_callback)
+
+        async with CONNECT_LOCK:
+            await devices.start()
+            await asyncio.sleep(scan_timeout)
+            await devices.stop()
+
+        _LOGGER.debug("Stopped discovery")
+
+        if devices is None:
+            if retry < 1:
+                _LOGGER.error(
+                    "Scanning for MicroBot devices failed. Stop trying", exc_info=True
+                )
+                return self._adv_data
+
+            _LOGGER.warning(
+                "Error scanning for MicroBot devices. Retrying (remaining: %d)",
+                retry,
+            )
+            await asyncio.sleep(DEFAULT_RETRY_TIMEOUT)
+            return await self.discover(retry - 1, scan_timeout)
+
+        return self._adv_data
+
+    async def _get_devices(self) -> dict:
+        """Get microbot devices."""
+        if not self._adv_data:
+            await self.discover()
+
+        return {address: adv for address, adv in self._adv_data.items()}
+
+    async def get_bots(self) -> dict[str, MicroBotAdvertisement]:
+        """Return all MicroBot devices with services data."""
+        return await self._get_devices()
+
+    async def get_device_data(
+        self, address: str
+    ) -> dict[str, MicroBotAdvertisement] | None:
+        """Return data for specific device."""
+        if not self._adv_data:
+            await self.discover()
+
+        _microbot_data = {
+            device: data
+            for device, data in self._adv_data.items()
+            # MacOS uses UUIDs instead of MAC addresses
+            if data.get("address") == address
+        }
+
+        return _microbot_data
+
+
+class MicroBotApiClient:
+    def __init__(
+        self,
+        device: BLEDevice,
+        config: str,
+        **kwargs: Any,
+    ) -> None:
+        """MicroBot Client."""
+        self._device = device
+        self._client: BleakClient | None = None
+        self._sb_adv_data: MicroBotAdvertisement | None = None
+        self._bdaddr = device.address
+        self._default_timeout = DEFAULT_TIMEOUT
+        #        self._retry = 10
+        self._retry: int = kwargs.pop("retry_count", DEFAULT_RETRY_COUNT)
+        self._token = None
+        self._config = expanduser(config)
         self.__loadToken()
-        self.newproto = newproto
-        self.depth = 50
-        self.duration = 0
-        self.mode = 0
-        self.is_server = is_server
-        self.socket = None
-        self.socket_path = socket_path
+        self._depth = 50
+        self._duration = 0
+        self._mode = 0
+        self._is_on = None
 
-    def connect(self, init=False):
-        if self.is_server == False:
-            self.socket = self.__connectToServer()
-            if self.socket:
-                return
+    @property
+    def is_on(self):
+        return self._is_on
 
-        retry = self.retry
-        while True:
-            try:
-                print("connecting...\r", end='')
-                _LOGGER.info("connecting...")
-                self.p = Peripheral(self.bdaddr, "random")
-                self.handler = MicroBotPush.MbpDelegate(0)
-                self.p.setDelegate(self.handler)
-                print("connected    ")
-                _LOGGER.info("connected    ")
-                self.__setToken(init)
-                break
-            except BTLEException:
-                if retry == 0:
-                    print("failed to connect")
-                    _LOGGER.error("failed to connect")
-                    break
-                retry = retry - 1 
-                sleep(1)
+    @property
+    def name(self) -> str:
+        """Return device name."""
+        return f"{self._device.name} ({self._device.address})"
 
-    def __connectToServer(self):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    async def notification_handler(self, handle: int, data: bytes) -> None:
+        tmp = binascii.b2a_hex(data)[4 : 4 + 36]
+        if b"0f0101" == tmp[:6] or b"0f0102" == tmp[:6]:
+            bdaddr = tmp[6 : 6 + 12]
+            bdaddr_rcvd = bdaddr.decode()
+            _LOGGER.debug("ack with bdaddr: %s", bdaddr_rcvd)
+            await self.getToken()
+        elif (
+            b"1fff" == tmp[0:4]
+            and b"0000000000000000000000" != tmp[6 : 6 + 22]
+            and b"00000000" == tmp[28:36]
+        ):
+            token = tmp[4 : 4 + 32]
+            self._token = token.decode()
+            _LOGGER.debug("ack with token")
+            await self._client.stop_notify(CHR2A89)
+            self.__storeToken()
+        else:
+            _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
+
+    async def notification_handler2(self, handle: int, data: bytes) -> None:
+        _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
+
+    async def is_connected(self, timeout=20):
+        if not self._client:
+            return False
         try:
-            self.socket.connect(self.socket_path)
-            print("connected to server")
-            _LOGGER.info("connected to server")
-            return self.socket
-        except ConnectionRefusedError:
-            return None
-        except FileNotFoundError:
-            return None
+            return await asyncio.wait_for(
+                self._client.is_connected(),
+                self._default_timeout if timeout is None else timeout,
+            )
+        except asyncio.TimeoutError:
+            return False
+        except Exception as e:
+            _LOGGER.error(e)
+            return False
 
-    def runServer(self):
-        if self.is_server == False:
-            return
-
-        print("server mode")
-        _LOGGER.info('server mode')
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            os.remove(self.socket_path)
-        except FileNotFoundError:
-            pass
-
-        s.bind(self.socket_path)
-        s.listen(1)
-        while True:
-            self.connect()
-
-            while True:
+    async def _do_connect(self, timeout=20):
+        x = await self.is_connected()
+        if x == True:
+            _LOGGER.debug("Already connected")
+        else:
+            async with CONNECT_LOCK:
                 try:
-                    connection, address = s.accept()
-                    msg = connection.recv(1024)
-                    param = json.loads(msg.decode('UTF-8'))
-                    print(param)
-                    _LOGGER.info(param)
-                    self.depth = param['depth']
-                    self.duration = param['duration']
-                    self.mode = param['mode']
-                    res = self.push(param['setparams'])
-                    msg = json.dumps({"result": res}).encode('UTF-8')
-                    connection.send(msg)
-                    if res == False:
-                        break
-                except BrokenPipeError:
-                    print('broken pipe error')
-                except KeyboardInterrupt:
-                    os.remove(self.socket_path)
-                    self.disconnect()
-                    sys.exit('exit')
+                    self._client = await establish_connection(
+                        BleakClient, self._device, self.name, max_attempts=self._retry
+                    )
+                    _LOGGER.debug("Connected!")
+                    await self._client.start_notify(CHR2A89, self.notification_handler2)
+                except Exception as e:
+                    _LOGGER.error(e)
 
-            os.remove(self.socket_path)
-            self.disconnect()
-            _LOGGER.error('server disconnected. restart service')
-            break
+    async def _do_disconnect(self):
+        if self.is_connected():
+            await self._client.stop_notify(CHR2A89)
+            await self._client.disconnect()
 
-    def disconnect(self):
-        if self.is_server == False:
-            if self.socket:
-                self.socket.close()
-                return
+    async def connect(self, init=False, timeout=20):
+        retry = self._retry
+        while True:
+            _LOGGER.debug("Connecting to %s", self._bdaddr)
+            try:
+                await asyncio.wait_for(
+                    self._do_connect(),
+                    self._default_timeout if timeout is None else timeout,
+                )
+                await self.__setToken(init)
+                break
+            except Exception as e:
+                if retry == 0:
+                    _LOGGER.error("Failed to connect: %s", e)
+                    break
+                retry = retry - 1
+                _LOGGER.debug("Retrying connect")
+                await asyncio.sleep(0.5)
 
-        if self.p == None:
-            return
+    async def disconnect(self, timeout=20):
+        _LOGGER.debug("Disconnecting from %s", self._bdaddr)
         try:
-            self.p.disconnect()
-            self.p = None
-            print("disconnected")
-            _LOGGER.info("disconnected")
-        except BTLEException:
-            print("failed to disconnect")
-            _LOGGER.error("failed to disconnect")
+            await asyncio.wait_for(
+                self._do_disconnect(),
+                self._default_timeout if timeout is None else timeout,
+            )
+        except Exception as e:
+            _LOGGER.error("error: %s", e)
 
     def __loadToken(self):
+        _LOGGER.debug("Looking for token")
         config = configparser.ConfigParser()
-        config.read(self.config)
-        bdaddr = self.bdaddr.lower().replace(':', '')
-        if config.has_option('tokens', bdaddr):
-            self.token = config.get('tokens', bdaddr)
+        config.read(self._config)
+        bdaddr = self._bdaddr.lower().replace(":", "")
+        if config.has_option("tokens", bdaddr):
+            self._token = config.get("tokens", bdaddr)
+            _LOGGER.debug("Token found")
 
     def __storeToken(self):
         config = configparser.ConfigParser()
-        config.read(self.config)
-        if not config.has_section('tokens'):
-            config.add_section('tokens')
-        bdaddr = self.bdaddr.lower().replace(':', '')
-        config.set('tokens', bdaddr, self.token)
+        config.read(self._config)
+        if not config.has_section("tokens"):
+            config.add_section("tokens")
+        bdaddr = self._bdaddr.lower().replace(":", "")
+        config.set("tokens", bdaddr, self._token)
         os.umask(0)
-        with open(os.open(self.config, os.O_CREAT | os.O_WRONLY, 0o600), 'w') as file:
+        with open(os.open(self._config, os.O_CREAT | os.O_WRONLY, 0o600), "w") as file:
             config.write(file)
+        _LOGGER.debug("Token saved to file")
 
     def hasToken(self):
-        if self.token == None:
+        if self._token == None:
+            _LOGGER.debug("no token")
             return False
         else:
+            _LOGGER.debug("Has token")
             return True
 
-    def __initToken(self):
+    async def __initToken(self):
+        _LOGGER.debug("Generating token")
         try:
-            if self.newproto:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
-                self.p.writeCharacteristic(c.getHandle()+1, b'\x01\x00', True)
-                id = self.__randomid(16)
-                c.write(binascii.a2b_hex(id+"00010040e20100fa01000700000000000000"), True)
-                c.write(binascii.a2b_hex(id+"0fffffffffffffffffffffffffff"+self.__randomid(32)), True)
-            else:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A98)[0]
-                self.p.writeCharacteristic(c.getHandle()+1, b'\x01\x00')
-                c.write(binascii.a2b_hex("00000167"+"00"*16))
-        except BTLEException:
-            print("failed to init token")
-            _LOGGER.error("failed to init token")
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "00010040e20100fa01000700000000000000"))
+            bar2 = list(
+                binascii.a2b_hex(
+                    id + "0fffffffffffffffffffffffffff" + self.__randomid(32)
+                )
+            )
+            _LOGGER.debug("Waiting for bdaddr notification")
+            await self._client.start_notify(CHR2A89, self.notification_handler)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+        except Exception as e:
+            _LOGGER.error("failed to init token: %s", e)
 
-        while True:
-            bdaddr = self.handler.getBdaddr()
-            if bdaddr != None:
-                break
-            if self.p.waitForNotifications(3.0):
-                continue
-            print("waiting...\r", end='')
-            _LOGGER.info("waiting...")
-
-    def __setToken(self, init):
+    async def __setToken(self, init):
         if init:
-            self.__initToken()
+            _LOGGER.debug("init set to True")
+            await self.__initToken()
         else:
             if self.hasToken():
+                _LOGGER.debug("Setting token")
                 try:
-                    if self.newproto:
-                        s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                        c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
-                        self.p.writeCharacteristic(c.getHandle()+1, b'\x01\x00', True)
-                        s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                        c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
-                        id = self.__randomid(16)
-                        c.write(binascii.a2b_hex(id+"00010000000000fa0000070000000000decd"), True)
-                        c.write(binascii.a2b_hex(id+"0fff"+self.token), True)
-                    else:
-                        s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                        c = s.getCharacteristics(MicroBotPush.UUID.CHR2A98)[0]
-                        c.write(binascii.a2b_hex("00000167"+self.token))
-                except BTLEException:
-                    print("failed to set token")
-                    _LOGGER.error("failed to set token")
+                    id = self.__randomid(16)
+                    bar1 = list(
+                        binascii.a2b_hex(id + "00010000000000fa0000070000000000decd")
+                    )
+                    bar2 = list(binascii.a2b_hex(id + "0fff" + self._token))
+                    await self._client.write_gatt_char(
+                        CHR2A89, bytearray(bar1), response=True
+                    )
+                    await self._client.write_gatt_char(
+                        CHR2A89, bytearray(bar2), response=True
+                    )
+                    _LOGGER.debug("Token set")
+                except Exception as e:
+                    _LOGGER.error("Failed to set token: %s", e)
 
-    def getToken(self):
-        if self.p == None:
-            return
+    async def getToken(self):
+        _LOGGER.debug("Getting token")
         try:
-            if self.newproto:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
-                self.p.writeCharacteristic(c.getHandle()+1, b'\x01\x00', True)
-                rstr = " "+self.__randomstr(32)+"\x00"*7
-                id = self.__randomid(16)
-                c.write(binascii.a2b_hex(id+"00010040e20101fa01000000000000000000"), True)
-                c.write(binascii.a2b_hex(id+"0fffffffffffffffffff0000000000000000"), True)
-            else:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A90)[0]
-                self.p.writeCharacteristic(c.getHandle()+1, b'\x01\x00')
-                rstr = " "+self.__randomstr(32)+"\x00"*7
-                c.write(rstr.encode())
-        except BTLEException:
-            print("failed to request token")
-            _LOGGER.error("failed to request token")
-
-        print('touch the button to get a token')
-        _LOGGER.warning('touch the button to get a token')
-
-        while True:
-            token = self.handler.getToken()
-            if token != None:
-                break
-            if self.p.waitForNotifications(1.0):
-                continue
-            print("waiting...\r", end='')
-            _LOGGER.info("waiting...")
-
-        #print(token)
-        self.token = token
-        self.__storeToken()
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "00010040e20101fa01000000000000000000"))
+            bar2 = list(binascii.a2b_hex(id + "0fffffffffffffffffff0000000000000000"))
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            _LOGGER.warning("touch the button to get a token")
+        except Exception as e:
+            _LOGGER.error("failed to request token: %s", e)
 
     def setDepth(self, depth):
-        if self.newproto:
-            self.depth = depth
-        else:
-            if self.p == None:
-                return
-            else:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1821)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A35)[0]
-                c.write(binascii.a2b_hex('{:02x}'.format(depth)))
+        self._depth = depth
+        _LOGGER.debug("Depth: %s", depth)
 
     def setDuration(self, duration):
-        if self.newproto:
-            self.duration = duration
+        self._duration = duration
+        _LOGGER.debug("Duration: %s", duration)
 
     def setMode(self, mode):
-        if self.newproto:
-            if 'normal' == mode:
-                self.mode = 0
-            elif 'invert' == mode:
-                self.mode = 1
-            elif 'toggle' == mode:
-                self.mode = 2
+        if "normal" == mode:
+            self._mode = 0
+        elif "invert" == mode:
+            self._mode = 1
+        elif "toggle" == mode:
+            self._mode = 2
+        _LOGGER.debug("Mode: %s", mode)
 
-    def __push_server(self, setparams):
-        msg = json.dumps({"depth": self.depth, "duration": self.duration, "mode": self.mode, "newproto": self.newproto, "setparams": setparams}).encode('UTF-8')
-        self.socket.send(msg)
-        msg = self.socket.recv(1024)
-        param = json.loads(msg.decode('UTF-8'))
-        _LOGGER.info(param)
-        return param['result']
+    async def push_on(self):
+        _LOGGER.debug("Attempting to push")
+        x = await self.is_connected()
+        if x == False:
+            _LOGGER.debug("Lost connection...reconnecting")
+            await self.connect(init=False)
+        try:
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
+            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            _LOGGER.debug("Pushed")
+            self._is_on = True
+        except Exception as e:
+            _LOGGER.error("Failed to push: %s", e)
+            self._is_on = False
 
-    def push(self, setparams):
-        if self.is_server == False:
-            if self.socket:
-                res = self.__push_server(setparams)
-                return res
+    async def push_off(self):
+        _LOGGER.debug("Attempting to push")
+        x = await self.is_connected()
+        if x == False:
+            _LOGGER.debug("Lost connection...reconnecting")
+            await self.connect(init=False)
+        try:
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
+            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            _LOGGER.debug("Pushed")
+            self._is_on = False
+        except Exception as e:
+            _LOGGER.error("Failed to push: %s", e)
+            self._is_on = True
 
-        if self.p == None:
-            return False
-        retry = self.retry
-        while True:
-            try:
-#                if self.newproto:
-                s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1831)
-                c = s.getCharacteristics(MicroBotPush.UUID.CHR2A89)[0]
-                id = self.__randomid(16)
-                if setparams == 'setparams':
-                    c.write(binascii.a2b_hex(id+"000100000008030001000a0000000000decd"), True)
-                    c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.mode)+"000000"+"000000000000000000000000"), True)
-                    c.write(binascii.a2b_hex(id+"000100000008040001000a0000000000decd"), True)
-                    c.write(binascii.a2b_hex(id+"0fff"+'{:02x}'.format(self.depth)+"000000"+"000000000000000000000000"), True)
-                    c.write(binascii.a2b_hex(id+"000100000008050001000a0000000000decd"), True)
-                    c.write(binascii.a2b_hex(id+"0fff"+self.duration.to_bytes(4,"little").hex()+"000000000000000000000000"), True)
-                    return True
-                else:
-                    c.write(binascii.a2b_hex(id+"000100000008020000000a0000000000decd"), True)
-                    c.write(binascii.a2b_hex(id+"0fffffffffff000000000000000000000000"), True)
-                return True
-#                else:
-#                    s = self.p.getServiceByUUID(MicroBotPush.UUID.SVC1821)
-#                    c = s.getCharacteristics(MicroBotPush.UUID.CHR2A11)[0]
-#                    c.write(b'\x01')
-#                    return True
-            except BTLEDisconnectError:
-                if retry == 0:
-                    print("failed to push by disconnect error")
-                    _LOGGER.error("failed to push by disconnect error")
-                    return False
-                retry = retry - 1 
-                sleep(1)
-            except BTLEException:
-                if retry == 0:
-                    print("failed to push by exception")
-                    _LOGGER.error("failed to push by exception")
-                    return False
-                retry = retry - 1
-                sleep(1)
+    async def calibrate(self):
+        _LOGGER.debug("Setting calibration")
+        x = await self.is_connected()
+        if x == False:
+            _LOGGER.debug("Lost connection...reconnecting")
+            await self._connect(init=False)
+        try:
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "000100000008030001000a0000000000decd"))
+            bar2 = list(
+                binascii.a2b_hex(
+                    id
+                    + "0fff"
+                    + "{:02x}".format(self._mode)
+                    + "000000"
+                    + "000000000000000000000000"
+                )
+            )
+            bar3 = list(binascii.a2b_hex(id + "000100000008040001000a0000000000decd"))
+            bar4 = list(
+                binascii.a2b_hex(
+                    id
+                    + "0fff"
+                    + "{:02x}".format(self._depth)
+                    + "000000"
+                    + "000000000000000000000000"
+                )
+            )
+            bar5 = list(binascii.a2b_hex(id + "000100000008050001000a0000000000decd"))
+            bar6 = list(
+                binascii.a2b_hex(
+                    id
+                    + "0fff"
+                    + self._duration.to_bytes(4, "little").hex()
+                    + "000000000000000000000000"
+                )
+            )
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar3), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar4), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar5), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar6), response=True)
+            _LOGGER.debug("Calibration set")
+        except Exception as e:
+            _LOGGER.error("Failed to calibrate: %s", e)
+
+    def update_from_advertisement(self, advertisement: MicroBotAdvertisement) -> None:
+        """Update device data from advertisement."""
+        self._sb_adv_data = advertisement
+        self._device = advertisement.device
 
     def __randomstr(self, n):
-       randstr = [random.choice(string.printable) for i in range(n)]
-       return ''.join(randstr)
+        randstr = [random.choice(string.printable) for i in range(n)]
+        return "".join(randstr)
 
     def __randomid(self, bits):
-       fmtstr = '{:'+'{:02d}'.format(int(bits/4))+'x}'
-       return fmtstr.format(random.randrange(2**bits))
-    # end of class
-
-def getArgs():
-    usage = 'python3 {} [-u] [-d #] xx:xx:xx:xx:xx:xx'.format(__file__)
-    argparser = ArgumentParser(usage=usage)
-    argparser.add_argument('bdaddr', type=str, help='bd address')
-    argparser.add_argument('-u', '--update', action='store_true', dest='update', help='forcibly update token')
-    argparser.add_argument('-d', '--depth', nargs='?', default=50, type=int, dest='depth', help='depth (0-100) (ignored, use with -s option if fwver>=1.0.0.0)')
-    argparser.add_argument('-c', '--config', nargs='?', default='~/.microbot.conf', type=str, dest='config', help='config (~/.microbot.conf)')
-    argparser.add_argument('-v', '--verbose', action='store_true', dest='verbose', help='verbose')
-    argparser.add_argument('-n', '--newproto', action='store_true', dest='newproto', help='use new protocol (fwver>=1.0.0.0)')
-    argparser.add_argument('-p', '--presshold', nargs='?', default=0, type=int, dest='duration', help='press and hold duration in seconds. use with -s option (fwver>=1.0.0.0)')
-    argparser.add_argument('-m', '--mode', nargs='?', default='normal', type=str, dest='mode', help='normal|invert|toggle. use with -s option (fwver>=1.0.0.0)')
-    argparser.add_argument('-s', '--setparams', action='store_true', dest='setparams', help='set mode, depth and press&hold duration in advance (fwver>=1.0.0.0)')
-    argparser.add_argument('-r', '--server', action='store_true', dest='is_server', help='server mode (fwver>=1.0.0.0)')
-    return argparser.parse_args()
-
-def main():
-    args = getArgs()
-    mbp = MicroBotPush(args.bdaddr, args.config, args.newproto, args.is_server)
-    if mbp.hasToken() and not args.update:
-        print('use existing token')
-        if args.is_server:
-            mbp.runServer()
-        else:
-            mbp.connect()
-            mbp.setDepth(args.depth)
-            mbp.setDuration(args.duration)
-            mbp.setMode(args.mode)
-            res = mbp.push(args.setparams)
-            mbp.disconnect()
-            if res == False:
-                sys.exit('failed to push')
-    else:
-        print('update token')
-        mbp.connect(init=True)
-        mbp.getToken()
-        mbp.disconnect()
-
-if __name__ == "__main__":
-    main()
+        fmtstr = "{:" + "{:02d}".format(int(bits / 4)) + "x}"
+        return fmtstr.format(random.randrange(2**bits))
