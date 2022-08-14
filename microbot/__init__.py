@@ -17,7 +17,7 @@ from binascii import hexlify, unhexlify
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 CONNECT_LOCK = asyncio.Lock()
-DEFAULT_TIMEOUT = 20
+DEFAULT_TIMEOUT = None
 DEFAULT_RETRY_COUNT = 5
 DEFAULT_SCAN_TIMEOUT = 30
 
@@ -148,7 +148,8 @@ class MicroBotApiClient:
     ) -> None:
         """MicroBot Client."""
         self._device = device
-        self._client = BleakClient(device, timeout=20)
+        self._client = None
+        #        self._client = None
         self._sb_adv_data: MicroBotAdvertisement | None = None
         self._bdaddr = device.address
         self._default_timeout = DEFAULT_TIMEOUT
@@ -191,7 +192,7 @@ class MicroBotApiClient:
     async def notification_handler2(self, handle: int, data: bytes) -> None:
         _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
 
-    async def is_connected(self, timeout=20):
+    async def is_connected(self):
         try:
             return await asyncio.wait_for(
                 self._client.is_connected(),
@@ -203,7 +204,7 @@ class MicroBotApiClient:
             _LOGGER.error(e)
             return False
 
-    async def _do_connect(self, timeout=20):
+    async def _do_connect(self):
         x = await self.is_connected()
         if x == True:
             _LOGGER.debug("Already connected")
@@ -223,14 +224,14 @@ class MicroBotApiClient:
             await self._client.stop_notify(CHR2A89)
             await self._client.disconnect()
 
-    async def connect(self, init=False, timeout=20):
+    async def connect(self, init=False):
         retry = self._retry
         while True:
             _LOGGER.debug("Connecting to %s", self._bdaddr)
             try:
                 await asyncio.wait_for(
                     self._do_connect(),
-                    self._default_timeout if timeout is None else timeout,
+                    self._default_timeout,
                 )
                 await self.__setToken(init)
                 break
@@ -242,7 +243,7 @@ class MicroBotApiClient:
                 _LOGGER.debug("Retrying connect")
                 await asyncio.sleep(0.5)
 
-    async def disconnect(self, timeout=20):
+    async def disconnect(self):
         _LOGGER.debug("Disconnecting from %s", self._bdaddr)
         try:
             await asyncio.wait_for(
@@ -272,7 +273,6 @@ class MicroBotApiClient:
             _LOGGER.debug("init set to True")
             await self.__initToken()
         else:
-            #            if self.hasToken():
             _LOGGER.debug("Setting token")
             try:
                 id = self.__randomid(16)
@@ -357,11 +357,11 @@ class MicroBotApiClient:
     async def calibrate(self, depth, duration, mode):
         x = await self.is_connected()
         if x == False:
-            await self._connect(init=False)
+            await self.connect(init=False)
             _LOGGER.debug("Setting calibration")
         self.setMode(mode)
         self.setDepth(depth)
-        self.setMode(mode)
+        self.setDuration(duration)
         try:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008030001000a0000000000decd"))
