@@ -4,21 +4,14 @@ import logging
 import asyncio
 from typing import Optional
 from typing import Any
-import struct
 import async_timeout
 import bleak
-from bleak import BleakScanner
-from bleak import discover
-from bleak import BleakError
+from bleak import BleakScanner, discover, BleakError
 from bleak_retry_connector import BleakClient, establish_connection
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 from dataclasses import dataclass
 import random, string
-import configparser
-from configparser import NoSectionError
-import os
-from os.path import expanduser
 import binascii
 from binascii import hexlify, unhexlify
 
@@ -62,6 +55,11 @@ def parse_advertisement_data(
         }
 
     return MicroBotAdvertisement(device.address, data, device)
+
+
+def randomid(bits):
+    fmtstr = "{:" + "{:02d}".format(int(bits / 4)) + "x}"
+    return fmtstr.format(random.randrange(2**bits))
 
 
 class GetMicroBotDevices:
@@ -145,20 +143,17 @@ class MicroBotApiClient:
     def __init__(
         self,
         device: BLEDevice,
-        config: str,
+        token: str,
         **kwargs: Any,
     ) -> None:
         """MicroBot Client."""
         self._device = device
-        self._client: BleakClient | None = None
+        self._client = BleakClient(device, timeout=20)
         self._sb_adv_data: MicroBotAdvertisement | None = None
         self._bdaddr = device.address
         self._default_timeout = DEFAULT_TIMEOUT
-        #        self._retry = 10
         self._retry: int = kwargs.pop("retry_count", DEFAULT_RETRY_COUNT)
-        self._token = None
-        self._config = expanduser(config)
-        self.__loadToken()
+        self._token = token
         self._depth = 50
         self._duration = 0
         self._mode = 0
@@ -189,7 +184,7 @@ class MicroBotApiClient:
             self._token = token.decode()
             _LOGGER.debug("ack with token")
             await self._client.stop_notify(CHR2A89)
-            self.__storeToken()
+        #            self.__storeToken()
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
 
@@ -197,8 +192,6 @@ class MicroBotApiClient:
         _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
 
     async def is_connected(self, timeout=20):
-        if not self._client:
-            return False
         try:
             return await asyncio.wait_for(
                 self._client.is_connected(),
@@ -259,44 +252,13 @@ class MicroBotApiClient:
         except Exception as e:
             _LOGGER.error("error: %s", e)
 
-    def __loadToken(self):
-        _LOGGER.debug("Looking for token")
-        config = configparser.ConfigParser()
-        config.read(self._config)
-        bdaddr = self._bdaddr.lower().replace(":", "")
-        if config.has_option("tokens", bdaddr):
-            self._token = config.get("tokens", bdaddr)
-            _LOGGER.debug("Token found")
-
-    def __storeToken(self):
-        config = configparser.ConfigParser()
-        config.read(self._config)
-        if not config.has_section("tokens"):
-            config.add_section("tokens")
-        bdaddr = self._bdaddr.lower().replace(":", "")
-        config.set("tokens", bdaddr, self._token)
-        os.umask(0)
-        with open(os.open(self._config, os.O_CREAT | os.O_WRONLY, 0o600), "w") as file:
-            config.write(file)
-        _LOGGER.debug("Token saved to file")
-
-    def hasToken(self):
-        if self._token == None:
-            _LOGGER.debug("no token")
-            return False
-        else:
-            _LOGGER.debug("Has token")
-            return True
-
     async def __initToken(self):
         _LOGGER.debug("Generating token")
         try:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "00010040e20100fa01000700000000000000"))
             bar2 = list(
-                binascii.a2b_hex(
-                    id + "0fffffffffffffffffffffffffff" + self.__randomid(32)
-                )
+                binascii.a2b_hex(id + "0fffffffffffffffffffffffffff" + self._token)
             )
             _LOGGER.debug("Waiting for bdaddr notification")
             await self._client.start_notify(CHR2A89, self.notification_handler)
@@ -310,23 +272,23 @@ class MicroBotApiClient:
             _LOGGER.debug("init set to True")
             await self.__initToken()
         else:
-            if self.hasToken():
-                _LOGGER.debug("Setting token")
-                try:
-                    id = self.__randomid(16)
-                    bar1 = list(
-                        binascii.a2b_hex(id + "00010000000000fa0000070000000000decd")
-                    )
-                    bar2 = list(binascii.a2b_hex(id + "0fff" + self._token))
-                    await self._client.write_gatt_char(
-                        CHR2A89, bytearray(bar1), response=True
-                    )
-                    await self._client.write_gatt_char(
-                        CHR2A89, bytearray(bar2), response=True
-                    )
-                    _LOGGER.debug("Token set")
-                except Exception as e:
-                    _LOGGER.error("Failed to set token: %s", e)
+            #            if self.hasToken():
+            _LOGGER.debug("Setting token")
+            try:
+                id = self.__randomid(16)
+                bar1 = list(
+                    binascii.a2b_hex(id + "00010000000000fa0000070000000000decd")
+                )
+                bar2 = list(binascii.a2b_hex(id + "0fff" + self._token))
+                await self._client.write_gatt_char(
+                    CHR2A89, bytearray(bar1), response=True
+                )
+                await self._client.write_gatt_char(
+                    CHR2A89, bytearray(bar2), response=True
+                )
+                _LOGGER.debug("Token set")
+            except Exception as e:
+                _LOGGER.error("Failed to set token: %s", e)
 
     async def getToken(self):
         _LOGGER.debug("Getting token")
@@ -339,6 +301,41 @@ class MicroBotApiClient:
             _LOGGER.warning("touch the button to get a token")
         except Exception as e:
             _LOGGER.error("failed to request token: %s", e)
+
+    async def push_on(self, init=False):
+        x = await self.is_connected()
+        if x == False:
+            await self.connect(init=False)
+            _LOGGER.debug("Attempting to push")
+        try:
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
+            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            _LOGGER.debug("Pushed")
+            self._is_on = True
+        except Exception as e:
+            _LOGGER.error("Failed to push: %s", e)
+            self._is_on = False
+
+    async def push_off(self):
+
+        x = await self.is_connected()
+        if x == False:
+            await self.connect(init=False)
+            _LOGGER.debug("Attempting to push")
+        try:
+            id = self.__randomid(16)
+            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
+            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
+            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            _LOGGER.debug("Pushed")
+            self._is_on = False
+        except Exception as e:
+            _LOGGER.error("Failed to push: %s", e)
+            self._is_on = True
 
     def setDepth(self, depth):
         self._depth = depth
@@ -357,48 +354,14 @@ class MicroBotApiClient:
             self._mode = 2
         _LOGGER.debug("Mode: %s", mode)
 
-    async def push_on(self):
-        _LOGGER.debug("Attempting to push")
+    async def calibrate(self, depth, duration, mode):
         x = await self.is_connected()
         if x == False:
-            _LOGGER.debug("Lost connection...reconnecting")
-            await self.connect(init=False)
-        try:
-            id = self.__randomid(16)
-            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
-            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
-            _LOGGER.debug("Pushed")
-            self._is_on = True
-        except Exception as e:
-            _LOGGER.error("Failed to push: %s", e)
-            self._is_on = False
-
-    async def push_off(self):
-        _LOGGER.debug("Attempting to push")
-        x = await self.is_connected()
-        if x == False:
-            _LOGGER.debug("Lost connection...reconnecting")
-            await self.connect(init=False)
-        try:
-            id = self.__randomid(16)
-            bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
-            bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
-            _LOGGER.debug("Pushed")
-            self._is_on = False
-        except Exception as e:
-            _LOGGER.error("Failed to push: %s", e)
-            self._is_on = True
-
-    async def calibrate(self):
-        _LOGGER.debug("Setting calibration")
-        x = await self.is_connected()
-        if x == False:
-            _LOGGER.debug("Lost connection...reconnecting")
             await self._connect(init=False)
+            _LOGGER.debug("Setting calibration")
+        self.setMode(mode)
+        self.setDepth(depth)
+        self.setMode(mode)
         try:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008030001000a0000000000decd"))
