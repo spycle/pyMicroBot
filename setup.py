@@ -4,7 +4,7 @@ setup(
     name="PyMicroBot",
     packages=["microbot"],
     install_requires=["bleak", "bleak-retry-connector>=1.4.0"],
-    version="0.0.3",
+    version="0.0.4",
     description="A library to communicate with MicroBot",
     author="spycle",
     url="https://github.com/spycle/pyMicroBot/",
