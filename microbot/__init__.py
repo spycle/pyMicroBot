@@ -140,20 +140,20 @@ class GetMicroBotDevices:
 
 
 class MicroBotApiClient:
+
+    client: BleakClient | None = None
+
     def __init__(
         self,
         device: BLEDevice,
         token: str,
-        **kwargs: Any,
     ) -> None:
         """MicroBot Client."""
         self._device = device
-        self._client = None
-        #        self._client = None
-        self._sb_adv_data: MicroBotAdvertisement | None = None
+        self._mb_adv_data: MicroBotAdvertisement | None = None
         self._bdaddr = device.address
         self._default_timeout = DEFAULT_TIMEOUT
-        self._retry: int = kwargs.pop("retry_count", DEFAULT_RETRY_COUNT)
+        self._retry: int = DEFAULT_RETRY_COUNT
         self._token = token
         self._depth = 50
         self._duration = 0
@@ -184,8 +184,8 @@ class MicroBotApiClient:
             token = tmp[4 : 4 + 32]
             self._token = token.decode()
             _LOGGER.debug("ack with token")
-            await self._client.stop_notify(CHR2A89)
-        #            self.__storeToken()
+            await MicroBotApiClient.client.stop_notify(CHR2A89)
+            await self.disconnect()
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
 
@@ -193,10 +193,12 @@ class MicroBotApiClient:
         _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
 
     async def is_connected(self):
+        if not MicroBotApiClient.client:
+            return False
         try:
             return await asyncio.wait_for(
-                self._client.is_connected(),
-                self._default_timeout if timeout is None else timeout,
+                MicroBotApiClient.client.is_connected(),
+                self._default_timeout,
             )
         except asyncio.TimeoutError:
             return False
@@ -211,18 +213,19 @@ class MicroBotApiClient:
         else:
             async with CONNECT_LOCK:
                 try:
-                    self._client = await establish_connection(
+                    MicroBotApiClient.client = await establish_connection(
                         BleakClient, self._device, self.name, max_attempts=self._retry
                     )
                     _LOGGER.debug("Connected!")
-                    await self._client.start_notify(CHR2A89, self.notification_handler2)
+                    await MicroBotApiClient.client.start_notify(
+                        CHR2A89, self.notification_handler2
+                    )
                 except Exception as e:
                     _LOGGER.error(e)
 
     async def _do_disconnect(self):
         if self.is_connected():
-            await self._client.stop_notify(CHR2A89)
-            await self._client.disconnect()
+            await MicroBotApiClient.client.disconnect()
 
     async def connect(self, init=False):
         retry = self._retry
@@ -248,7 +251,7 @@ class MicroBotApiClient:
         try:
             await asyncio.wait_for(
                 self._do_disconnect(),
-                self._default_timeout if timeout is None else timeout,
+                self._default_timeout,
             )
         except Exception as e:
             _LOGGER.error("error: %s", e)
@@ -262,9 +265,15 @@ class MicroBotApiClient:
                 binascii.a2b_hex(id + "0fffffffffffffffffffffffffff" + self._token)
             )
             _LOGGER.debug("Waiting for bdaddr notification")
-            await self._client.start_notify(CHR2A89, self.notification_handler)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            await MicroBotApiClient.client.start_notify(
+                CHR2A89, self.notification_handler
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar1), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar2), response=True
+            )
         except Exception as e:
             _LOGGER.error("failed to init token: %s", e)
 
@@ -280,10 +289,10 @@ class MicroBotApiClient:
                     binascii.a2b_hex(id + "00010000000000fa0000070000000000decd")
                 )
                 bar2 = list(binascii.a2b_hex(id + "0fff" + self._token))
-                await self._client.write_gatt_char(
+                await MicroBotApiClient.client.write_gatt_char(
                     CHR2A89, bytearray(bar1), response=True
                 )
-                await self._client.write_gatt_char(
+                await MicroBotApiClient.client.write_gatt_char(
                     CHR2A89, bytearray(bar2), response=True
                 )
                 _LOGGER.debug("Token set")
@@ -296,8 +305,12 @@ class MicroBotApiClient:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "00010040e20101fa01000000000000000000"))
             bar2 = list(binascii.a2b_hex(id + "0fffffffffffffffffff0000000000000000"))
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar1), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar2), response=True
+            )
             _LOGGER.warning("touch the button to get a token")
         except Exception as e:
             _LOGGER.error("failed to request token: %s", e)
@@ -311,16 +324,20 @@ class MicroBotApiClient:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
             bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar1), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar2), response=True
+            )
             _LOGGER.debug("Pushed")
             self._is_on = True
         except Exception as e:
             _LOGGER.error("Failed to push: %s", e)
             self._is_on = False
+        await self.disconnect()
 
     async def push_off(self):
-
         x = await self.is_connected()
         if x == False:
             await self.connect(init=False)
@@ -329,13 +346,18 @@ class MicroBotApiClient:
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
             bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar1), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar2), response=True
+            )
             _LOGGER.debug("Pushed")
             self._is_on = False
         except Exception as e:
             _LOGGER.error("Failed to push: %s", e)
             self._is_on = True
+        await self.disconnect()
 
     def setDepth(self, depth):
         self._depth = depth
@@ -393,20 +415,35 @@ class MicroBotApiClient:
                     + "000000000000000000000000"
                 )
             )
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar1), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar2), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar3), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar4), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar5), response=True)
-            await self._client.write_gatt_char(CHR2A89, bytearray(bar6), response=True)
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar1), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar2), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar3), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar4), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar5), response=True
+            )
+            await MicroBotApiClient.client.write_gatt_char(
+                CHR2A89, bytearray(bar6), response=True
+            )
             _LOGGER.debug("Calibration set")
         except Exception as e:
             _LOGGER.error("Failed to calibrate: %s", e)
 
     def update_from_advertisement(self, advertisement: MicroBotAdvertisement) -> None:
         """Update device data from advertisement."""
-        self._sb_adv_data = advertisement
+        _LOGGER.debug("Updating from advertisement")
+        self._mb_adv_data = advertisement
+        _LOGGER.debug("Advertisement: %s", self._mb_adv_data)
         self._device = advertisement.device
+        _LOGGER.debug("Device: %s", self._device)
 
     def __randomstr(self, n):
         randstr = [random.choice(string.printable) for i in range(n)]
