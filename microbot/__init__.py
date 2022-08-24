@@ -2,13 +2,19 @@
 from __future__ import annotations
 import logging
 import asyncio
-from typing import Optional
-from typing import Any
+from typing import Optional, Any
 import async_timeout
 import bleak
 from bleak import BleakScanner, discover, BleakError
-from bleak_retry_connector import BleakClient, establish_connection
+from bleak.exc import BleakDBusError
+from bleak_retry_connector import (
+    BleakClientWithServiceCache,
+    BleakNotFoundError,
+    ble_device_has_changed,
+    establish_connection,
+)
 from bleak.backends.device import BLEDevice
+from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
 from bleak.backends.scanner import AdvertisementData
 from dataclasses import dataclass
 import random, string
@@ -141,7 +147,7 @@ class GetMicroBotDevices:
 
 class MicroBotApiClient:
 
-    client: BleakClient | None = None
+    client: BleakClientWithServiceCache | None = None
 
     def __init__(
         self,
@@ -155,14 +161,20 @@ class MicroBotApiClient:
         self._default_timeout = DEFAULT_TIMEOUT
         self._retry: int = DEFAULT_RETRY_COUNT
         self._token = token
+        self._token_callback = None
         self._depth = 50
         self._duration = 0
         self._mode = 0
         self._is_on = None
+        self._cached_services: BleakGATTServiceCollection | None = None
 
     @property
     def is_on(self):
         return self._is_on
+
+    @property
+    def token(self):
+        return self._token_callback
 
     @property
     def name(self) -> str:
@@ -182,10 +194,9 @@ class MicroBotApiClient:
             and b"00000000" == tmp[28:36]
         ):
             token = tmp[4 : 4 + 32]
-            self._token = token.decode()
+            self._token_callback = token.decode()
             _LOGGER.debug("ack with token")
             await MicroBotApiClient.client.stop_notify(CHR2A89)
-            await self.disconnect()
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
 
@@ -214,7 +225,13 @@ class MicroBotApiClient:
             async with CONNECT_LOCK:
                 try:
                     MicroBotApiClient.client = await establish_connection(
-                        BleakClient, self._device, self.name, max_attempts=self._retry
+                        BleakClientWithServiceCache,
+                        self._device,
+                        self.name,
+                        self._disconnected,
+                        max_attempts=self._retry,
+                        cached_services=self._cached_services,
+                        ble_device_callback=lambda: self._device,
                     )
                     _LOGGER.debug("Connected!")
                     await MicroBotApiClient.client.start_notify(
@@ -255,6 +272,10 @@ class MicroBotApiClient:
             )
         except Exception as e:
             _LOGGER.error("error: %s", e)
+
+    def _disconnected(self, client: BleakClientWithServiceCache) -> None:
+        """Disconnected callback."""
+        _LOGGER.debug("Disconnection callback")
 
     async def __initToken(self):
         _LOGGER.debug("Generating token")
