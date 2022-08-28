@@ -55,9 +55,6 @@ def parse_advertisement_data(
             "address": device.address,  # MacOS uses UUIDs
             "local_name": advertisement_data.local_name,
             "rssi": device.rssi,
-            "svc": advertisement_data.service_uuids[4],
-            "manufacturer_data_1280": advertisement_data.manufacturer_data.get(1280),
-            "manufacturer_data_76": advertisement_data.manufacturer_data.get(76),
         }
 
     return MicroBotAdvertisement(device.address, data, device)
