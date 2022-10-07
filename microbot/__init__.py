@@ -27,7 +27,7 @@ DEFAULT_TIMEOUT = None
 DEFAULT_RETRY_COUNT = 5
 DEFAULT_SCAN_TIMEOUT = 30
 
-SVC1831 = "00001831-0000-1000-8000-00805f9b34fb"
+SVCABCD = "0000abcd-0000-1000-8000-00805f9b34fb"
 CHR2A89 = "00002a89-0000-1000-8000-00805f9b34fb"
 
 
@@ -47,7 +47,7 @@ def parse_advertisement_data(
     services = advertisement_data.service_uuids
     if not services:
         return
-    if SVC1831 not in services:
+    if SVCABCD not in services:
         return
     else:
         _LOGGER.debug("Updating MicroBot data")
