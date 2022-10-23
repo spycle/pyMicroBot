@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     name="PyMicroBot",
     packages=["microbot"],
-    install_requires=["bleak", "bleak-retry-connector>=1.4.0"],
+    install_requires=["bleak>=0.19.0", "bleak-retry-connector>=1.4.0"],
     version="0.0.8",
     description="A library to communicate with MicroBot",
     author="spycle",
