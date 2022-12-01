@@ -24,7 +24,7 @@ from binascii import hexlify, unhexlify
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 CONNECT_LOCK = asyncio.Lock()
 DEFAULT_TIMEOUT = None
-DEFAULT_RETRY_COUNT = 5
+DEFAULT_RETRY_COUNT = 7
 DEFAULT_SCAN_TIMEOUT = 30
 
 SVCABCD = "0000abcd-0000-1000-8000-00805f9b34fb"
