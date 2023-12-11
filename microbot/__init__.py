@@ -233,6 +233,7 @@ class MicroBotApiClient:
                     await self._client.start_notify(
                         CHR2A89, self.notification_handler2
                     )
+                    await self._client.stop_notify(CHR2A89)
                 except Exception as e:
                     _LOGGER.error(e)
 
