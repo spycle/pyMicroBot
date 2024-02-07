@@ -23,9 +23,9 @@ from binascii import hexlify, unhexlify
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 CONNECT_LOCK = asyncio.Lock()
-DEFAULT_TIMEOUT = 30
+DEFAULT_TIMEOUT = 90
 DEFAULT_RETRY_COUNT = 7
-DEFAULT_SCAN_TIMEOUT = 30
+DEFAULT_SCAN_TIMEOUT = 90
 
 SVCABCD = "0000abcd-0000-1000-8000-00805f9b34fb"
 CHR2A89 = "00002a89-0000-1000-8000-00805f9b34fb"
@@ -203,10 +203,7 @@ class MicroBotApiClient:
         if not self._client:
             return False
         try:
-            return await asyncio.wait_for(
-                self._client.is_connected(),
-                self._default_timeout,
-            )
+            return self._client.is_connected()
         except asyncio.TimeoutError:
             return False
         except Exception as e:
@@ -238,7 +235,8 @@ class MicroBotApiClient:
                     _LOGGER.error(e)
 
     async def _do_disconnect(self):
-        if self.is_connected():
+        x = await self.is_connected():
+        if x == True:
             await self._client.disconnect()
 
     async def connect(self, init=False):
