@@ -235,7 +235,7 @@ class MicroBotApiClient:
                     _LOGGER.error(e)
 
     async def _do_disconnect(self):
-        x = await self.is_connected():
+        x = await self.is_connected()
         if x == True:
             await self._client.disconnect()
 
