@@ -162,11 +162,16 @@ class MicroBotApiClient:
         self._duration = 0
         self._mode = 0
         self._is_on = None
+        self._is_connected = None
         self._cached_services: BleakGATTServiceCollection | None = None
 
     @property
     def is_on(self):
         return self._is_on
+
+    @property
+    def is_connected(self):
+        return self._is_connected
 
     @property
     def token(self):
@@ -192,6 +197,7 @@ class MicroBotApiClient:
             token = tmp[4 : 4 + 32]
             self._token_callback = token.decode()
             _LOGGER.debug("ack with token")
+            self._is_connected = True
             await self._client.stop_notify(CHR2A89)
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
@@ -199,45 +205,31 @@ class MicroBotApiClient:
     async def notification_handler2(self, handle: int, data: bytes) -> None:
         _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
 
-    async def is_connected(self):
-        if not self._client:
-            return False
-        try:
-            return self._client.is_connected()
-        except asyncio.TimeoutError:
-            return False
-        except Exception as e:
-            _LOGGER.error(e)
-            return False
-
     async def _do_connect(self):
-        x = await self.is_connected()
-        if x == True:
-            _LOGGER.debug("Already connected")
-        else:
-            async with CONNECT_LOCK:
-                try:
-                    self._client = await establish_connection(
-                        BleakClientWithServiceCache,
-                        self._device,
-                        self.name,
-                        self._disconnected,
-                        max_attempts=self._retry,
-                        cached_services=self._cached_services,
-                        ble_device_callback=lambda: self._device,
-                    )
-                    _LOGGER.debug("Connected!")
-                    await self._client.start_notify(
-                        CHR2A89, self.notification_handler2
-                    )
-                    await self._client.stop_notify(CHR2A89)
-                except Exception as e:
-                    _LOGGER.error(e)
+        async with CONNECT_LOCK:
+             try:
+                self._client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self._device,
+                    self.name,
+                    self._disconnected,
+                    max_attempts=self._retry,
+                    cached_services=self._cached_services,
+                    ble_device_callback=lambda: self._device,
+                )
+                _LOGGER.debug("Connected!")
+                self._is_connected = True
+                await self._client.start_notify(
+                    CHR2A89, self.notification_handler2
+                )
+                await self._client.stop_notify(CHR2A89)
+            except Exception as e:
+                _LOGGER.error(e)
+                self._is_connected = False
 
     async def _do_disconnect(self):
-        x = await self.is_connected()
-        if x == True:
             await self._client.disconnect()
+            self._is_connected = False
 
     async def connect(self, init=False):
         retry = self._retry
@@ -332,11 +324,9 @@ class MicroBotApiClient:
             _LOGGER.error("failed to request token: %s", e)
 
     async def push_on(self, init=False):
-        x = await self.is_connected()
-        if x == False:
-            await self.connect(init=False)
-            _LOGGER.debug("Attempting to push")
+        _LOGGER.debug("Attempting to push")
         try:
+            await self.connect(init=False)
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
             bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
@@ -354,11 +344,9 @@ class MicroBotApiClient:
         await self.disconnect()
 
     async def push_off(self):
-        x = await self.is_connected()
-        if x == False:
-            await self.connect(init=False)
-            _LOGGER.debug("Attempting to push")
+        _LOGGER.debug("Attempting to push")
         try:
+            await self.connect(init=False)
             id = self.__randomid(16)
             bar1 = list(binascii.a2b_hex(id + "000100000008020000000a0000000000decd"))
             bar2 = list(binascii.a2b_hex(id + "0fffffffffff000000000000000000000000"))
@@ -393,10 +381,8 @@ class MicroBotApiClient:
         _LOGGER.debug("Mode: %s", mode)
 
     async def calibrate(self, depth, duration, mode):
-        x = await self.is_connected()
-        if x == False:
-            await self.connect(init=False)
-            _LOGGER.debug("Setting calibration")
+        _LOGGER.debug("Setting calibration")
+        await self.connect(init=False)
         self.setMode(mode)
         self.setDepth(depth)
         self.setDuration(duration)
@@ -452,6 +438,7 @@ class MicroBotApiClient:
             _LOGGER.debug("Calibration set")
         except Exception as e:
             _LOGGER.error("Failed to calibrate: %s", e)
+        await self.disconnect()
 
     def update_from_advertisement(self, advertisement: MicroBotAdvertisement) -> None:
         """Update device data from advertisement."""
