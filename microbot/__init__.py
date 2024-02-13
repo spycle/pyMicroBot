@@ -207,7 +207,7 @@ class MicroBotApiClient:
 
     async def _do_connect(self):
         async with CONNECT_LOCK:
-             try:
+            try:
                 self._client = await establish_connection(
                     BleakClientWithServiceCache,
                     self._device,
