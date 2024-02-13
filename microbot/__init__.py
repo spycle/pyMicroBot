@@ -228,8 +228,8 @@ class MicroBotApiClient:
                 self._is_connected = False
 
     async def _do_disconnect(self):
-            await self._client.disconnect()
-            self._is_connected = False
+        await self._client.disconnect()
+        self._is_connected = False
 
     async def connect(self, init=False):
         retry = self._retry
