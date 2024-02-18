@@ -202,9 +202,6 @@ class MicroBotApiClient:
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
 
-    async def notification_handler2(self, handle: int, data: bytes) -> None:
-        _LOGGER.debug(f"Received response at {handle=}: {hexlify(data).decode()}")
-
     async def _do_connect(self):
         async with CONNECT_LOCK:
             try:
@@ -219,10 +216,6 @@ class MicroBotApiClient:
                 )
                 _LOGGER.debug("Connected!")
                 self._is_connected = True
-                await self._client.start_notify(
-                    CHR2A89, self.notification_handler2
-                )
-                await self._client.stop_notify(CHR2A89)
             except Exception as e:
                 _LOGGER.error(e)
                 self._is_connected = False
