@@ -182,6 +182,9 @@ class MicroBotApiClient:
         """Return device name."""
         return f"{self._device.name} ({self._device.address})"
 
+    async def is_connected(self):
+        return self._is_connected
+
     async def notification_handler(self, handle: int, data: bytes) -> None:
         tmp = binascii.b2a_hex(data)[4 : 4 + 36]
         if b"0f0101" == tmp[:6] or b"0f0102" == tmp[:6]:
