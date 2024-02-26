@@ -170,6 +170,10 @@ class MicroBotApiClient:
         return self._is_on
 
     @property
+    def is_connected(self):
+        return self._is_connected
+
+    @property
     def token(self):
         return self._token_callback
 
@@ -177,9 +181,6 @@ class MicroBotApiClient:
     def name(self) -> str:
         """Return device name."""
         return f"{self._device.name} ({self._device.address})"
-
-    async def is_connected(self):
-        return self._is_connected
 
     async def notification_handler(self, handle: int, data: bytes) -> None:
         tmp = binascii.b2a_hex(data)[4 : 4 + 36]
