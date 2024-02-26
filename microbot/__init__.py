@@ -170,10 +170,6 @@ class MicroBotApiClient:
         return self._is_on
 
     @property
-    def is_connected(self):
-        return self._is_connected
-
-    @property
     def token(self):
         return self._token_callback
 
