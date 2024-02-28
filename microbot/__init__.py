@@ -183,18 +183,7 @@ class MicroBotApiClient:
         return f"{self._device.name} ({self._device.address})"
 
     async def is_connected(self):
-        if not self._client:
-            return False    
-        try:
-            return await asyncio.wait_for(
-                self._client.is_connected(),  
-                self._default_timeout,
-            )
-        except asyncio.TimeoutError:
-            return False
-        except Exception as e:
-            _LOGGER.error(e)
-            return False
+        return True
 
     async def notification_handler(self, handle: int, data: bytes) -> None:
         tmp = binascii.b2a_hex(data)[4 : 4 + 36]
