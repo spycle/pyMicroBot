@@ -16,5 +16,6 @@ setup(
         "Programming Language :: Python",
         "Topic :: Home Automation",
         "Topic :: Software Development :: Libraries :: Python Modules",
+        "License :: OSI Approved :: MIT License",
     ],
 )
