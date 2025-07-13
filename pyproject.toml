@@ -4,7 +4,7 @@ requires = ["setuptools>=77.0"]
 
 [project]
 name = "PyMicroBot"
-version = "0.0.22"
+version = "0.0.23"
 license = "MIT"
 description = "A library to communicate with MicroBot"
 authors = [{ name = "spycle" }]
