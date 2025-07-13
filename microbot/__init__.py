@@ -2,24 +2,19 @@
 from __future__ import annotations
 import logging
 import asyncio
-from typing import Optional, Any
-import async_timeout
-import bleak
-from bleak import BleakScanner, discover, BleakError
-from bleak.exc import BleakDBusError
+from typing import Any
+from bleak import BleakScanner
 from bleak_retry_connector import (
     BleakClientWithServiceCache,
-    BleakNotFoundError,
-    ble_device_has_changed,
     establish_connection,
 )
 from bleak.backends.device import BLEDevice
-from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
+from bleak.backends.service import BleakGATTServiceCollection
 from bleak.backends.scanner import AdvertisementData
 from dataclasses import dataclass
 import random, string
 import binascii
-from binascii import hexlify, unhexlify
+from binascii import hexlify
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 CONNECT_LOCK = asyncio.Lock()
