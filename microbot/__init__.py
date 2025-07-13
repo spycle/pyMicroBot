@@ -162,7 +162,7 @@ class MicroBotApiClient:
         self._duration = 0
         self._mode = 0
         self._is_on = None
-        self._is_connected_ = None
+        self._is_connected = None
         self._cached_services: BleakGATTServiceCollection | None = None
 
     @property
@@ -171,7 +171,7 @@ class MicroBotApiClient:
 
     @property
     def is_connected(self):
-        return self._is_connected_
+        return self._is_connected
 
     @property
     def token(self):
@@ -183,7 +183,7 @@ class MicroBotApiClient:
         return f"{self._device.name} ({self._device.address})"
 
     async def is_connected(self):
-        return self._is_connected_
+        return self._is_connected
 
     async def notification_handler(self, handle: int, data: bytes) -> None:
         tmp = binascii.b2a_hex(data)[4 : 4 + 36]
@@ -200,7 +200,7 @@ class MicroBotApiClient:
             token = tmp[4 : 4 + 32]
             self._token_callback = token.decode()
             _LOGGER.debug("ack with token")
-            self._is_connected_ = True
+            self._is_connected = True
             await self._client.stop_notify(CHR2A89)
         else:
             _LOGGER.debug(f'Received response at {handle=}: {hexlify(data, ":")!r}')
@@ -218,14 +218,14 @@ class MicroBotApiClient:
                     ble_device_callback=lambda: self._device,
                 )
                 _LOGGER.debug("Connected!")
-                self._is_connected_ = True
+                self._is_connected = True
             except Exception as e:
                 _LOGGER.error(e)
-                self._is_connected_ = False
+                self._is_connected = False
 
     async def _do_disconnect(self):
         await self._client.disconnect()
-        self._is_connected_ = False
+        self._is_connected = False
 
     async def connect(self, init=False):
         retry = self._retry
