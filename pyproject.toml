@@ -1,0 +1,29 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=77.0"]
+
+[project]
+name = "PyMicroBot"
+version = "0.0.22"
+license = "MIT"
+description = "A library to communicate with MicroBot"
+authors = [{ name = "spycle" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Other Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Topic :: Home Automation",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "bleak>=0.19.0",
+  "bleak-retry-connector>=1.4.0",
+]
+
+[project.urls]
+Source = "https://github.com/spycle/pyMicroBot/"
+
+[tool.setuptools.packages.find]
+include = ["microbot*"]
